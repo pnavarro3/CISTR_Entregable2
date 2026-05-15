@@ -121,10 +121,18 @@ typedef struct {
     int read_idx;
 } twai_listener_ctx_t;
 
+static IRAM_ATTR bool twai_error(twai_node_handle_t handle, const twai_error_event_data_t *edata, void *user_ctx)
+{
+    //ESP_EARLY_LOGW(TAG, "TWAI error event flags: 0x%lx", (unsigned long)edata->err_flags.val);
+    if (edata->err_flags.val == 0x02) { // Bus off
+        ESP_EARLY_LOGW(TAG, "TWAI bus desconectado");
+    }
+    return false;
+};
 // TWAI receive callback - store data and signal
 static bool IRAM_ATTR twai_listener_rx_callback(twai_node_handle_t handle, const twai_rx_done_event_data_t *edata, void *user_ctx)
 {
-    BaseType_t woken;
+    BaseType_t woken = pdFALSE;
     twai_listener_ctx_t *ctx = (twai_listener_ctx_t *)user_ctx;
 
     if (xSemaphoreTakeFromISR(ctx->free_pool_semaphore, &woken) != pdTRUE) {
@@ -173,6 +181,12 @@ void app_main(void)
         .tx_queue_depth = 5,
     };
 
+    // Register callbacks
+    twai_event_callbacks_t callbacks = {
+        .on_rx_done = twai_listener_rx_callback,
+        .on_error = twai_error,
+    };
+
     // Create TWAI node
     ESP_ERROR_CHECK(twai_new_node_onchip(&node_config, &twai_listener_ctx.node_hdl));
     ESP_LOGI(TAG, "TWAI node created");
@@ -184,12 +198,8 @@ void app_main(void)
         .is_ext = false,    // Receive only standard ID
     };
     ESP_ERROR_CHECK(twai_node_config_mask_filter(twai_listener_ctx.node_hdl, 0, &data_filter));
-
-    // Register callbacks
-    twai_event_callbacks_t callbacks = {
-        .on_rx_done = twai_listener_rx_callback,
-    };
     ESP_ERROR_CHECK(twai_node_register_event_callbacks(twai_listener_ctx.node_hdl, &callbacks, &twai_listener_ctx));
+    
 
     // Enable TWAI node
     ESP_ERROR_CHECK(twai_node_enable(twai_listener_ctx.node_hdl));
@@ -200,8 +210,6 @@ void app_main(void)
         if (xSemaphoreTake(twai_listener_ctx.rx_result_semaphore, portMAX_DELAY) == pdTRUE) {
             twai_frame_t *frame = &twai_listener_ctx.rx_pool[twai_listener_ctx.read_idx].frame;
             uint16_t consigna = 0;
-            ESP_LOGI(TAG, "RX: %x [%d] %x %x %x %x %x %x %x %x", \
-                     frame->header.id, frame->header.dlc, frame->buffer[0], frame->buffer[1], frame->buffer[2], frame->buffer[3], frame->buffer[4], frame->buffer[5], frame->buffer[6], frame->buffer[7]);
 
             // Caso 1: consulta '?' -> responder cantidad de LEDs encendidos (0..3)
             if (frame->header.dlc == 1 && frame->buffer[0] == '?') {
